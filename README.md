@@ -1,13 +1,13 @@
 Speech Command Recognition on Cloud ML
 --------------------------------------------------
 
-Build a model to recognize the type of a flower from its image.
+Build a model to recognize speech commands from audio files.
 
 - - -
 
 To run this example, first follow instructions for [setting up your environment](https://cloud.google.com/ml/docs/how-tos/getting-set-up).
 
-Also, we use Apache Beam (running on Cloud Dataflow) and PIL to preprocess the images into embeddings, so make sure to install the required packages:
+Also, we use Apache Beam (running on Cloud Dataflow) so make sure to install the required packages:
 ```
 pip install -r requirements.txt
 ```
