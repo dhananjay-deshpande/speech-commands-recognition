@@ -5,7 +5,7 @@ import re
 import csv
 
 cloud_prefix = 'gs:/'
-local_prefix = '/Users/dhananjaydeshpande/PycharmProjects/speech-to-text/data'
+local_prefix = '/Users/dhananjaydeshpande/PycharmProjects/speech-commands-recognition/data'
 root_dir = 'speech_commands_v0.01'
 
 labels = ['bed',
@@ -117,6 +117,7 @@ if __name__ == '__main__':
         for dir_name, sub_dir, file_list in os.walk(root_dir, topdown=False):
             print('Found directory: %s' % dir_name)
             label = dir_name.split('/')[-1]
+
             print('label: %s ' % label)
             if label in labels:
                 for fname in file_list:
@@ -131,5 +132,4 @@ if __name__ == '__main__':
                         wtest.writerow([absolute_path, label])
                     else:
                         wtrain.writerow([absolute_path, label])
-
 

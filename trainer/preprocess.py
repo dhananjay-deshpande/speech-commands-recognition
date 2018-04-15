@@ -42,8 +42,21 @@ import logging
 import os
 import subprocess
 import sys
+import numpy as np
+
+BACKGROUND_NOISE_DIR_NAME = '_background_noise_'
 
 #logging.basicConfig(filename='test.log', filemode='w', level=logging.DEBUG)
+log = logging.getLogger('tensorflow')
+log.setLevel(logging.DEBUG)
+# create formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# create file handler which logs even debug messages
+fh = logging.FileHandler('tensorflow.log')
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(formatter)
+log.addHandler(fh)
 
 import apache_beam as beam
 from apache_beam.metrics import Metrics
@@ -61,6 +74,7 @@ import tensorflow as tf
 from tensorflow.python.ops import io_ops
 from tensorflow.python.framework import errors
 from tensorflow.python.lib.io import file_io
+from tensorflow.python.platform import gfile
 from tensorflow.contrib.framework.python.ops import audio_ops as contrib_audio
 
 slim = tf.contrib.slim
@@ -94,6 +108,8 @@ class ExtractLabelIdsDoFn(beam.DoFn):
     # The try except is for compatiblity across multiple versions of the sdk
     def process(self, row, all_labels):
 
+        log.info('Inside ExtractLabelIdsDoFn')
+
         try:
             row = row.element
         except AttributeError:
@@ -112,9 +128,9 @@ class ExtractLabelIdsDoFn(beam.DoFn):
 
         csv_rows_count.inc()
         uri = row[0]
-        if not uri or not uri.startswith('gs://'):
-            invalid_uri.inc()
-            return
+        #if not uri or not uri.startswith('gs://'):
+        #    invalid_uri.inc()
+        #    return
 
         # Default label for labels not in labels file is 'unknown'
         # with id 11
@@ -132,22 +148,64 @@ class ExtractLabelIdsDoFn(beam.DoFn):
             unlabeled_image.inc()
             label_ids.append(1)
 
+        log.info('Emitting filename:' + str(row[0])+ ' label ids: ' + str(label_ids))
         yield row[0], label_ids
 
 class MFCCGraph(object):
     """Builds a graph and uses it to extract mfcc fingerprint from audio
 	"""
 
-    def __init__(self, tf_session):
+    def __init__(self, tf_session, opt):
         self.tf_session = tf_session
+        self.opt = opt
 
+        self.desired_samples = int(self.opt.sample_rate * self.opt.clip_duration_ms / 1000)
+        self.window_size_samples = int(self.opt.sample_rate * self.opt.window_size_ms / 1000)
+        self.window_stride_samples = int(self.opt.sample_rate * self.opt.window_stride_ms / 1000)
+        self.time_shift_samples = int((self.opt.time_shift_ms * self.opt.sample_rate) / 1000)
+        self.background_frequency = self.opt.background_frequency
+        self.background_volume_range = self.opt.background_volume
         # input_wav_filename is the tensor that contains the audio URI
         # It is used to decode wav files and obtain mfcc fingerprints.
 
-        self.input_wav_filename, self.mfcc_fingerprint = self.build_graph()
+        self.prepare_background_data()
+        self.build_graph()
 
         init_op = tf.global_variables_initializer()
         self.tf_session.run(init_op)
+
+    def prepare_background_data(self):
+        """Searches a folder for background noise audio, and loads it into memory.
+
+        It's expected that the background audio samples will be in a subdirectory
+        specified in 'background_noise_path', as .wavs that match
+        the sample rate of the training data, but can be much longer in duration.
+
+        If the background noise folder doesn't exist at all, this isn't an
+        error, it's just taken to mean that no background noise augmentation should
+        be used. If the folder does exist, but it's empty, that's treated as an
+        error.
+
+        Returns:
+            List of raw PCM-encoded audio samples of background noise.
+
+        """
+
+        self.background_data = []
+
+        background_dir = self.opt.background_noise_path
+        if not os.path.exists(background_dir):
+            return
+
+        with tf.Session(graph=tf.Graph()) as sess:
+            wav_filename_placeholder = tf.placeholder(tf.string, [])
+            wav_loader = io_ops.read_file(wav_filename_placeholder)
+            wav_decoder = contrib_audio.decode_wav(wav_loader, desired_channels=1)
+            search_path = os.path.join(background_dir, '*.wav')
+            for wav_path in gfile.Glob(search_path):
+                wav_data = sess.run(wav_decoder,
+                    feed_dict={wav_filename_placeholder: wav_path}).audio.flatten()
+                self.background_data.append(wav_data)
 
     def build_graph(self):
         """ Graph to extract mfcc fingerprint given wav file
@@ -160,26 +218,45 @@ class MFCCGraph(object):
 		  mfcc_fingerprint: The MFCC fingerprint tensor, that will be materialized later.
 		"""
 
-        input_wav_filename = tf.placeholder(tf.string, [])
-
-
-        wav_loader = io_ops.read_file(input_wav_filename)
-
+        self.wav_filename_placeholder_ = tf.placeholder(tf.string, [])
+        wav_loader = io_ops.read_file(self.wav_filename_placeholder_)
         wav_decoder = contrib_audio.decode_wav(
-			wav_loader, desired_channels=1, desired_samples=16000)
+			wav_loader, desired_channels=1, desired_samples=self.desired_samples)
+
+        # Allow the audio sample's volume to be adjusted.
+        self.foreground_volume_placeholder_ = tf.placeholder(tf.float32, [])
+        scaled_foreground = tf.multiply(wav_decoder.audio,
+                                    self.foreground_volume_placeholder_)
+
+        # Shift the sample's start position, and pad any gaps with zeros.
+        self.time_shift_padding_placeholder_ = tf.placeholder(tf.int32, [2, 2])
+        self.time_shift_offset_placeholder_ = tf.placeholder(tf.int32, [2])
+        padded_foreground = tf.pad(
+            scaled_foreground,
+            self.time_shift_padding_placeholder_,
+            mode='CONSTANT')
+        sliced_foreground = tf.slice(padded_foreground,
+                                self.time_shift_offset_placeholder_,
+                                [self.desired_samples, -1])
+        # Mix in background noise.
+        self.background_data_placeholder_ = tf.placeholder(tf.float32,
+                                                       [self.desired_samples, 1])
+        self.background_volume_placeholder_ = tf.placeholder(tf.float32, [])
+        background_mul = tf.multiply(self.background_data_placeholder_,
+                                 self.background_volume_placeholder_)
+        background_add = tf.add(background_mul, sliced_foreground)
+        background_clamp = tf.clip_by_value(background_add, -1.0, 1.0)
 
         spectrogram = contrib_audio.audio_spectrogram(
-            wav_decoder.audio,
-            window_size=480,
-            stride=160,
+            background_clamp,
+            window_size=self.window_size_samples,
+            stride=self.window_stride_samples,
             magnitude_squared=True)
 
-        mfcc_fingerprint = contrib_audio.mfcc(
+        self.mfcc_fingerprint_ = contrib_audio.mfcc(
             spectrogram,
             wav_decoder.sample_rate,
-            dct_coefficient_count=40)
-
-        return input_wav_filename, mfcc_fingerprint
+            dct_coefficient_count=self.opt.dct_coefficient_count)
 
     def calculate_fingerprint(self, filename):
         """Get the mfcc fingerprint for a given WAV image.
@@ -191,10 +268,54 @@ class MFCCGraph(object):
 			mfcc fingerprint for WAV file
 		"""
 
-        print('Input filename %s' % filename)
+        #print('Input filename %s' % filename)
+
+        # If we're time shifting, set up the offset for this sample.
+        if self.time_shift_samples > 0:
+            time_shift_amount = np.random.randint(-self.time_shift_samples, self.time_shift_samples)
+        else:
+            time_shift_amount = 0
+
+        if time_shift_amount > 0:
+            time_shift_padding = [[time_shift_amount, 0], [0, 0]]
+            time_shift_offset = [0, 0]
+        else:
+            time_shift_padding = [[0, -time_shift_amount], [0, 0]]
+            time_shift_offset = [-time_shift_amount, 0]
+
+        input_dict = {
+            self.wav_filename_placeholder_: filename,
+            self.time_shift_padding_placeholder_: time_shift_padding,
+            self.time_shift_offset_placeholder_: time_shift_offset,
+        }
+
+        use_background = False
+        if self.opt.background_noise_path:
+            use_background = True
+
+        # Choose a section of background noise to mix in.
+        if use_background:
+            background_index = np.random.randint(len(self.background_data))
+            background_samples = self.background_data[background_index]
+            background_offset = np.random.randint(
+                0, len(background_samples) - self.desired_samples)
+            background_clipped = background_samples[background_offset:(
+            background_offset + self.desired_samples)]
+            background_reshaped = background_clipped.reshape([self.desired_samples, 1])
+            if np.random.uniform(0, 1) < self.background_frequency:
+                background_volume = np.random.uniform(0, self.background_volume_range)
+            else:
+                background_volume = 0
+        else:
+            background_reshaped = np.zeros([self.desired_samples, 1])
+            background_volume = 0
+
+        input_dict[self.background_data_placeholder_] = background_reshaped
+        input_dict[self.background_volume_placeholder_] = background_volume
+        input_dict[self.foreground_volume_placeholder_] = 1
 
         return self.tf_session.run(
-            self.mfcc_fingerprint, feed_dict={self.input_wav_filename: filename})
+            self.mfcc_fingerprint_, feed_dict=input_dict)
 
 class TFExampleFromAudioDoFn(beam.DoFn):
     """Embeds audio mfcc fingerprint and labels, stores them in tensorflow.Example.
@@ -208,10 +329,12 @@ class TFExampleFromAudioDoFn(beam.DoFn):
 					   stored.
 	"""
 
-    def __init__(self):
+    def __init__(self, opt):
         self.tf_session = None
         self.graph = None
         self.preprocess_graph = None
+        assert isinstance(opt, object)
+        self.opt = opt
 
     def start_bundle(self, context=None):
         # There is one tensorflow session per instance of TFExampleFromAudioDoFn.
@@ -222,7 +345,7 @@ class TFExampleFromAudioDoFn(beam.DoFn):
             self.graph = tf.Graph()
             self.tf_session = tf.InteractiveSession(graph=self.graph)
             with self.graph.as_default():
-                self.preprocess_graph = MFCCGraph(self.tf_session)
+                self.preprocess_graph = MFCCGraph(self.tf_session, self.opt)
 
     def process(self, element):
 
@@ -239,13 +362,13 @@ class TFExampleFromAudioDoFn(beam.DoFn):
 
         uri, label_ids = element
 
-        logging.info('Got URI %s: %s', uri, str(label_ids))
+        log.info('Got URI %s: %s', uri, str(label_ids))
 
         try:
             fingerprint = self.preprocess_graph.calculate_fingerprint(uri)
         except errors.InvalidArgumentError as e:
             incompatible_image.inc()
-            logging.warning('Could not generate fingerprint from %s: %s', uri, str(e))
+            log.warning('Could not generate fingerprint from %s: %s', uri, str(e))
             return
 
         if fingerprint.any():
@@ -266,18 +389,21 @@ class TFExampleFromAudioDoFn(beam.DoFn):
 
 def configure_pipeline(p, opt):
     """Specify PCollection and transformations in pipeline."""
+    log.info('reading input source')
     read_input_source = beam.io.ReadFromText(
         opt.input_path, strip_trailing_newlines=True)
+    log.info('reading label source: ' + str(opt.input_dict))
     read_label_source = beam.io.ReadFromText(
         opt.input_dict, strip_trailing_newlines=True)
+    log.info('reading labels')
     labels = (p | 'Read dictionary' >> read_label_source)
-    print(labels)
+    log.info(labels)
     _ = (p
          | 'Read input' >> read_input_source
          | 'Parse input' >> beam.Map(lambda line: csv.reader([line]).next())
          | 'Extract label ids' >> beam.ParDo(ExtractLabelIdsDoFn(),
                                              beam.pvalue.AsIter(labels))
-         | 'Extract Fingerprint and make TFExample' >> beam.ParDo(TFExampleFromAudioDoFn())
+         | 'Extract Fingerprint and make TFExample' >> beam.ParDo(TFExampleFromAudioDoFn(opt))
          | 'SerializeToString' >> beam.Map(lambda x: x.SerializeToString())
          | 'Save to disk'
          >> beam.io.WriteToTFRecord(opt.output_path,
@@ -286,13 +412,13 @@ def configure_pipeline(p, opt):
 def run(in_args=None):
     """Runs the pre-processing pipeline."""
 
-    logging.info('Running pipeline')
+    log.info('Running pipeline')
     pipeline_options = PipelineOptions.from_dictionary(vars(in_args))
     with beam.Pipeline(options=pipeline_options) as p:
         try:
             configure_pipeline(p, in_args)
         except:
-            logging.error('Error while executing pipeline')
+            log.error('Error while executing pipeline')
 
 
 def default_args(argv):
@@ -315,10 +441,59 @@ def default_args(argv):
         required=True,
         help='Output directory to write results to.')
     parser.add_argument(
+        '--background_noise_path',
+        dest='background_noise_path',
+        help='GCS uri to an audio background noise directory')
+    parser.add_argument(
+        '--background_volume',
+        type=float,
+        default=0.1,
+        help="""\
+        How loud the background noise should be, between 0 and 1.
+        """)
+    parser.add_argument(
+        '--background_frequency',
+        type=float,
+        default=0.8,
+        help="""\
+        How many of the training samples have background noise mixed in.
+        """)
+    parser.add_argument(
         '--project',
         type=str,
         help='The cloud project name to be used for running this pipeline')
-
+    parser.add_argument(
+        '--time_shift_ms',
+        type=float,
+        default=100.0,
+        help="""\
+        Range to randomly shift the training audio by in time.
+        """)
+    parser.add_argument(
+        '--sample_rate',
+        type=int,
+        default=16000,
+        help='Expected sample rate of the wavs',)
+    parser.add_argument(
+        '--clip_duration_ms',
+        type=int,
+        default=1000,
+        help='Expected duration in milliseconds of the wavs',)
+    parser.add_argument(
+        '--window_size_ms',
+        type=float,
+        default=30.0,
+        help='How long each spectrogram timeslice is.',)
+    parser.add_argument(
+        '--window_stride_ms',
+        type=float,
+        default=10.0,
+        help='How far to move in time between spectogram timeslices.',)
+    parser.add_argument(
+        '--dct_coefficient_count',
+        type=int,
+        default=40,
+        help='How many bins to use for the MFCC fingerprint',)
     parser.add_argument(
         '--job_name',
         type=str,
