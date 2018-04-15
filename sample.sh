@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Now that we are set up, we can start processing some flowers images.
+# Now that we are set up, we can start processing some speech commands audio.
 declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
-declare -r JOB_ID="flowers_${USER}_$(date +%Y%m%d_%H%M%S)"
+declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
 declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
-declare -r DICT_FILE=gs://cloud-ml-data/img/flower_photos/dict.txt
+declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels
 
-declare -r MODEL_NAME=flowers
+declare -r MODEL_NAME=speech-commands-recognition
 declare -r VERSION_NAME=v1
 
 echo
@@ -22,13 +22,13 @@ set -v -e
 # CPU's.  Check progress here: https://console.cloud.google.com/dataflow
 python trainer/preprocess.py \
   --input_dict "$DICT_FILE" \
-  --input_path "gs://cloud-ml-data/img/flower_photos/eval_set.csv" \
+  --input_path "gs://${BUCKET}/data/eval.csv" \
   --output_path "${GCS_PATH}/preproc/eval" \
   --cloud
 
 python trainer/preprocess.py \
   --input_dict "$DICT_FILE" \
-  --input_path "gs://cloud-ml-data/img/flower_photos/train_set.csv" \
+  --input_path "gs://${BUCKET}/data/train.csv" \
   --output_path "${GCS_PATH}/preproc/train" \
   --cloud
 

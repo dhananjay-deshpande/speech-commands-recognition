@@ -4,9 +4,6 @@ import hashlib
 import re
 import csv
 
-cloud_prefix = 'gs:/'
-local_prefix = '/Users/dhananjaydeshpande/PycharmProjects/speech-commands-recognition/data'
-root_dir = 'speech_commands_v0.01'
 
 labels = ['bed',
           'bird',
@@ -103,13 +100,44 @@ if __name__ == '__main__':
         default=10,
         help='Percentage of data for validation')
 
+    parser.add_argument(
+        '--cloud',
+        type=bool,
+        default=False,
+        help='Use cloud prefix')
+
+    parser.add_argument(
+        '--cloud_prefix',
+        type=str,
+        default='gs://speech-commands-recognition-ml/data/',
+        help='Location of speech commands folder on cloud')
+
+    parser.add_argument(
+        '--local_prefix',
+        type=str,
+        default='/Users/dhananjaydeshpande/PycharmProjects/speech-commands-recognition/data/',
+        help='Location of speech commands folder locally')
+
+    parser.add_argument(
+        '--speech_commands_data_folder',
+        type=str,
+        default='speech_commands_v0.01',
+        help='Unarchived data from Google Speech Commands Dataset')
+
     args = parser.parse_args()
 
     print(args.validation_percentage)
-
     print(args.testing_percentage)
 
-    with open('validate.csv', 'w') as fvalidate, open('test.csv', 'w') as ftest, open('train.csv', 'w') as ftrain:
+    if args.cloud:
+        prefix = args.cloud_prefix
+    else:
+        prefix = args.local_prefix
+
+    root_dir = args.local_prefix + args.speech_commands_data_folder
+
+    print(root_dir)
+    with open('eval.csv', 'w') as fvalidate, open('test.csv', 'w') as ftest, open('train.csv', 'w') as ftrain:
         wvalidate = csv.writer(fvalidate)
         wtest = csv.writer(ftest)
         wtrain = csv.writer(ftrain)
@@ -124,7 +152,7 @@ if __name__ == '__main__':
                     print('\t%s' % fname)
                     mode = which_set(fname, args.validation_percentage, args.testing_percentage)
 
-                    absolute_path = local_prefix + '/' + root_dir + '/' + label + '/' + fname
+                    absolute_path = prefix +  args.speech_commands_data_folder + '/' + label + '/' + fname
 
                     if mode == 'validation':
                         wvalidate.writerow([absolute_path, label])

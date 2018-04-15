@@ -40,8 +40,6 @@ LABEL_COLUMN = 'label'
 FINGERPRINT_COLUMN = 'fingerprint'
 DEFAULT_CHECKPOINT = ''
 
-BOTTLENECK_TENSOR_SIZE = 2048
-
 class GraphMod():
     TRAIN = 1
     EVALUATE = 2
@@ -86,7 +84,7 @@ def create_model():
     parser.add_argument(
         '--model_architecture',
         type=str,
-        default='conv',
+        default='cnn',
         help='What model architecture to use')
     parser.add_argument(
         '--train_dir',
@@ -132,8 +130,12 @@ def create_model():
     override_if_not_in_args('--eval_interval_secs', '2', task_args)
     override_if_not_in_args('--log_interval_secs', '2', task_args)
     override_if_not_in_args('--min_train_eval_rate', '2', task_args)
-    return Model(args), task_args
 
+    if args.model_architecture == 'cnn':
+        return Model(args), task_args
+
+    # By default return cnn model
+    return Model(args), task_args
 
 class GraphReferences(object):
     """Holder of base tensors used for training model using common task."""
@@ -146,15 +148,15 @@ class GraphReferences(object):
         self.metric_values = []
         self.keys = None
         self.predictions = []
-        self.input_audio = None
-
+        self.input_wav = None
 
 class Model(object):
-    """TensorFlow model for the flowers problem."""
+    """CNN TensorFlow model for the audio commands problem."""
 
     def __init__(self, args):
         self.args = args
 
+        self.dropout = args.dropout
         self.desired_samples = int(args.sample_rate * args.clip_duration_ms / 1000)
         self.window_size_samples = int(args.sample_rate * args.window_size_ms / 1000)
         self.window_stride_samples = int(args.sample_rate * args.window_stride_ms / 1000)
@@ -180,7 +182,7 @@ class Model(object):
          This function can be customized to add arbitrary layers for
          application-specific requirements.
         Args:
-          embeddings: The embedding (bottleneck) tensor.
+          fingerprints: The fingerprints tensor.
           all_labels_count: The number of all labels including the default label.
           hidden_layer_size: The size of the hidden_layer. Roughtly, 1/4 of the
                              bottleneck tensor size.
@@ -215,7 +217,7 @@ class Model(object):
                 v
         [MatMul]<-(weights)
                 v
-            [BiasAdd]<-(bias)
+        [BiasAdd]<-(bias)
                 v
 
         This produces slightly lower quality results than the 'conv' model, but needs
@@ -233,12 +235,10 @@ class Model(object):
             TensorFlow node outputting logits results, and optionally a dropout
             placeholder.
         """
-        if is_training:
-            dropout_prob = tf.placeholder(tf.float32, name='dropout_prob')
 
         input_frequency_size = self.dct_coefficient_count
         input_time_size = self.spectrogram_length
-        fingerprint_4d = tf.reshape(fingerprint_input,
+        fingerprint_4d = tf.reshape(fingerprints,
                                     [-1, input_time_size, input_frequency_size, 1])
         first_filter_width = 8
         first_filter_height = input_time_size
@@ -255,7 +255,7 @@ class Model(object):
         ], 'VALID') + first_bias
         first_relu = tf.nn.relu(first_conv)
         if is_training:
-            first_dropout = tf.nn.dropout(first_relu, dropout_prob)
+            first_dropout = tf.nn.dropout(first_relu, dropout_keep_prob)
         else:
             first_dropout = first_relu
         first_conv_output_width = math.floor(
@@ -275,7 +275,7 @@ class Model(object):
         first_fc_bias = tf.Variable(tf.zeros([first_fc_output_channels]))
         first_fc = tf.matmul(flattened_first_conv, first_fc_weights) + first_fc_bias
         if is_training:
-            second_fc_input = tf.nn.dropout(first_fc, dropout_prob)
+            second_fc_input = tf.nn.dropout(first_fc, dropout_keep_prob)
         else:
             second_fc_input = first_fc
         second_fc_output_channels = 128
@@ -285,7 +285,7 @@ class Model(object):
         second_fc_bias = tf.Variable(tf.zeros([second_fc_output_channels]))
         second_fc = tf.matmul(second_fc_input, second_fc_weights) + second_fc_bias
         if is_training:
-            final_fc_input = tf.nn.dropout(second_fc, dropout_prob)
+            final_fc_input = tf.nn.dropout(second_fc, dropout_keep_prob)
         else:
             final_fc_input = second_fc
         label_count = all_labels_count
@@ -294,13 +294,9 @@ class Model(object):
                 [second_fc_output_channels, label_count], stddev=0.01))
         final_fc_bias = tf.Variable(tf.zeros([label_count]))
         final_fc = tf.matmul(final_fc_input, final_fc_weights) + final_fc_bias
-        if is_training:
-            return final_fc, dropout_prob
-        else:
-            return final_fc
 
-        softmax = tf.nn.softmax(logits, name='softmax')
-        return softmax, logits
+        softmax = tf.nn.softmax(final_fc, name='softmax')
+        return softmax, final_fc
 
     def build_fingerprints_graph(self):
         """Builds a fingerprint graph and adds the necessary input & output tensors.
@@ -309,7 +305,7 @@ class Model(object):
           modified accordingly.
 
         Returns:
-          input_audio: A placeholder for audio string batch that allows feeding the
+          input_wav: A placeholder for audio string batch that allows feeding the
                       fingerprints layer with audio bytes for prediction.
           fingerprints: The fingerprints tensor.
         """
@@ -432,7 +428,7 @@ class Model(object):
     def build_eval_graph(self, data_paths, batch_size):
         return self.build_graph(data_paths, batch_size, GraphMod.EVALUATE)
 
-    def restore_from_checkpoint(self, session, inception_checkpoint_file,
+    def restore_from_checkpoint(self, session, checkpoint_file,
                                 trained_checkpoint_file):
         """To restore model variables from the checkpoint file.
 
@@ -442,36 +438,10 @@ class Model(object):
            we restore this from two checkpoint files.
         Args:
           session: The session to be used for restoring from checkpoint.
-          inception_checkpoint_file: Path to the checkpoint file for the Inception
-                                     graph.
-          trained_checkpoint_file: path to the trained checkpoint for the other
-                                   layers.
+          checkpoint_file: Path to the checkpoint file
         """
-        inception_exclude_scopes = [
-            'InceptionV3/AuxLogits', 'InceptionV3/Logits', 'global_step',
-            'final_ops'
-        ]
-        reader = tf.train.NewCheckpointReader(inception_checkpoint_file)
-        var_to_shape_map = reader.get_variable_to_shape_map()
-
-        # Get all variables to restore. Exclude Logits and AuxLogits because they
-        # depend on the input data and we do not need to intialize them.
-        all_vars = tf.contrib.slim.get_variables_to_restore(
-            exclude=inception_exclude_scopes)
-        # Remove variables that do not exist in the inception checkpoint (for
-        # example the final softmax and fully-connected layers).
-        inception_vars = {
-            var.op.name: var
-            for var in all_vars if var.op.name in var_to_shape_map
-        }
-        inception_saver = tf.train.Saver(inception_vars)
-        inception_saver.restore(session, inception_checkpoint_file)
-
-        # Restore the rest of the variables from the trained checkpoint.
-        trained_vars = tf.contrib.slim.get_variables_to_restore(
-            exclude=inception_exclude_scopes + inception_vars.keys())
-        trained_saver = tf.train.Saver(trained_vars)
-        trained_saver.restore(session, trained_checkpoint_file)
+        saver = tf.train.Saver(tf.global_variables())
+        saver.restore(session, checkpoint_file)
 
     def build_prediction_graph(self):
         """Builds prediction graph and registers appropriate endpoints."""
@@ -481,7 +451,7 @@ class Model(object):
         keys_placeholder = tf.placeholder(tf.string, shape=[None])
         inputs = {
             'key': keys_placeholder,
-            'image_bytes': tensors.input_jpeg
+            'audio_bytes': tensors.input_wav
         }
 
         # To extract the id, we need to add the identity function.
@@ -507,8 +477,7 @@ class Model(object):
             inputs, outputs = self.build_prediction_graph()
             init_op = tf.global_variables_initializer()
             sess.run(init_op)
-            self.restore_from_checkpoint(sess, self.inception_checkpoint_file,
-                                         last_checkpoint)
+            self.restore_from_checkpoint(sess, self.checkpoint_file)
             signature_def = build_signature(inputs=inputs, outputs=outputs)
             signature_def_map = {
                 signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
@@ -548,7 +517,6 @@ def loss(logits, labels):
     cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
         logits=logits, labels=labels, name='xentropy')
     return tf.reduce_mean(cross_entropy, name='xentropy_mean')
-
 
 def training(loss_op):
     global_step = tf.Variable(0, name='global_step', trainable=False)
