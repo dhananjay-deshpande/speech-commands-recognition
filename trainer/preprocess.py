@@ -48,7 +48,7 @@ BACKGROUND_NOISE_DIR_NAME = '_background_noise_'
 
 #logging.basicConfig(filename='test.log', filemode='w', level=logging.DEBUG)
 log = logging.getLogger('tensorflow')
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.ERROR)
 # create formatter and add it to the handlers
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -89,9 +89,9 @@ non_existing_file = Metrics.counter('main', 'nonExistingFile')
 skipped_empty_line = Metrics.counter('main', 'skippedEmptyLine')
 fingerprint_good = Metrics.counter('main', 'fingerprint_good')
 fingerprint_bad = Metrics.counter('main', 'fingerprint_bad')
-incompatible_image = Metrics.counter('main', 'incompatible_image')
+incompatible_audio = Metrics.counter('main', 'incompatible_audio')
 invalid_uri = Metrics.counter('main', 'invalid_file_name')
-unlabeled_image = Metrics.counter('main', 'unlabeled_image')
+unlabeled_audio = Metrics.counter('main', 'unlabeled_audio')
 unknown_label = Metrics.counter('main', 'unknown_label')
 
 class Default(object):
@@ -145,7 +145,7 @@ class ExtractLabelIdsDoFn(beam.DoFn):
         labels_count.inc(len(label_ids))
 
         if not label_ids:
-            unlabeled_image.inc()
+            unlabeled_audio.inc()
             label_ids.append(1)
 
         log.info('Emitting filename:' + str(row[0])+ ' label ids: ' + str(label_ids))
@@ -192,6 +192,9 @@ class MFCCGraph(object):
         """
 
         self.background_data = []
+
+        if not self.opt.background_noise_path:
+            return
 
         background_dir = self.opt.background_noise_path
         if not os.path.exists(background_dir):
@@ -259,7 +262,7 @@ class MFCCGraph(object):
             dct_coefficient_count=self.opt.dct_coefficient_count)
 
     def calculate_fingerprint(self, filename):
-        """Get the mfcc fingerprint for a given WAV image.
+        """Get the mfcc fingerprint for a given WAV audio.
 
 		Args:
 			filename : URI of WAV file
@@ -322,10 +325,10 @@ class TFExampleFromAudioDoFn(beam.DoFn):
 
 	(uri, label_id, mfcc fingerprint) -> (tensorflow.Example).
 
-	Output proto contains 'label', 'image_uri' and 'mfcc fingerprint'.
+	Output proto contains 'label', 'audio_uri' and 'mfcc fingerprint'.
 
 	Attributes:
-	  image_graph_uri: an uri to gcs bucket where serialized image graph is
+	  audio_graph_uri: an uri to gcs bucket where serialized audio graph is
 					   stored.
 	"""
 
@@ -367,7 +370,7 @@ class TFExampleFromAudioDoFn(beam.DoFn):
         try:
             fingerprint = self.preprocess_graph.calculate_fingerprint(uri)
         except errors.InvalidArgumentError as e:
-            incompatible_image.inc()
+            incompatible_audio.inc()
             log.warning('Could not generate fingerprint from %s: %s', uri, str(e))
             return
 
@@ -441,6 +444,22 @@ def default_args(argv):
         required=True,
         help='Output directory to write results to.')
     parser.add_argument(
+        '--project',
+        type=str,
+        help='The cloud project name to be used for running this pipeline')
+    parser.add_argument(
+        '--job_name',
+        type=str,
+        default='speech-commands-recognition-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'),
+        help='A unique job identifier.')
+    parser.add_argument(
+        '--num_workers', default=20, type=int, help='The number of workers.')
+    parser.add_argument('--cloud', default=False, action='store_true')
+    parser.add_argument(
+        '--runner',
+        help='See Dataflow runners, may be blocking'
+             ' or not, on cloud or not, etc.')
+    parser.add_argument(
         '--background_noise_path',
         dest='background_noise_path',
         help='GCS uri to an audio background noise directory')
@@ -458,10 +477,6 @@ def default_args(argv):
         help="""\
         How many of the training samples have background noise mixed in.
         """)
-    parser.add_argument(
-        '--project',
-        type=str,
-        help='The cloud project name to be used for running this pipeline')
     parser.add_argument(
         '--time_shift_ms',
         type=float,
@@ -494,18 +509,6 @@ def default_args(argv):
         type=int,
         default=40,
         help='How many bins to use for the MFCC fingerprint',)
-    parser.add_argument(
-        '--job_name',
-        type=str,
-        default='speechcommands-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'),
-        help='A unique job identifier.')
-    parser.add_argument(
-        '--num_workers', default=20, type=int, help='The number of workers.')
-    parser.add_argument('--cloud', default=False, action='store_true')
-    parser.add_argument(
-        '--runner',
-        help='See Dataflow runners, may be blocking'
-             ' or not, on cloud or not, etc.')
 
     parsed_args, _ = parser.parse_known_args(argv)
 

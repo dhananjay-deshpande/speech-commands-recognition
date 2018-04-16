@@ -18,6 +18,7 @@ import argparse
 import logging
 import os
 import math
+import base64
 
 import tensorflow as tf
 from tensorflow.contrib import layers
@@ -76,7 +77,7 @@ def create_model():
     parser.add_argument(
         '--label_count',
         type=int,
-        default=5)
+        default=12)
     parser.add_argument(
         '--dropout',
         type=float,
@@ -148,7 +149,7 @@ class GraphReferences(object):
         self.metric_values = []
         self.keys = None
         self.predictions = []
-        self.input_wav = None
+        self.input_audio = None
 
 class Model(object):
     """CNN TensorFlow model for the audio commands problem."""
@@ -167,7 +168,8 @@ class Model(object):
         else:
             self.spectrogram_length = 1 + int(self.length_minus_window / self.window_stride_samples)
         self.fingerprint_size = args.dct_coefficient_count * self.spectrogram_length
-
+        self.label_count = args.label_count
+        self.dct_coefficient_count = args.dct_coefficient_count
 
     def add_final_training_ops(self,
                                fingerprints,
@@ -250,9 +252,9 @@ class Model(object):
                 [first_filter_height, first_filter_width, 1, first_filter_count],
                 stddev=0.01))
         first_bias = tf.Variable(tf.zeros([first_filter_count]))
+        logging.info(str(type(fingerprint_4d)))
         first_conv = tf.nn.conv2d(fingerprint_4d, first_weights, [
-            1, first_filter_stride_y, first_filter_stride_x, 1
-        ], 'VALID') + first_bias
+            1, first_filter_stride_y, first_filter_stride_x, 1], 'VALID') + first_bias
         first_relu = tf.nn.relu(first_conv)
         if is_training:
             first_dropout = tf.nn.dropout(first_relu, dropout_keep_prob)
@@ -305,7 +307,7 @@ class Model(object):
           modified accordingly.
 
         Returns:
-          input_wav: A placeholder for audio string batch that allows feeding the
+          input_audio: A placeholder for audio string batch that allows feeding the
                       fingerprints layer with audio bytes for prediction.
           fingerprints: The fingerprints tensor.
         """
@@ -314,28 +316,30 @@ class Model(object):
         # The CloudML Prediction API always "feeds" the Tensorflow graph with
         # dynamic batch sizes e.g. (?,).  decode_jpeg only processes scalar
         # strings because it cannot guarantee a batch of images would have
-        # the same output size.  We use tf.map_fn to give decode_jpeg a scalar
+        # the same output size.  We use tf.map_fn to give decode_audio a scalar
         # string from dynamic batches.
-        def decode(audio_str_tensor, desired_samples, window_size_samples, window_stride_samples, dct_coefficient_count):
+        def decode_audio(audio_str):
+
+            decoded_str = tf.decode_base64(audio_str)
 
             wav_decoder = contrib_audio.decode_wav(
-			audio_str_tensor, desired_channels=1, desired_samples=desired_samples)
+			    decoded_str, desired_channels=1, desired_samples=self.desired_samples)
 
             spectrogram = contrib_audio.audio_spectrogram(
-                wav_decoder,
-                window_size=window_size_samples,
-                stride=window_stride_samples,
+                wav_decoder.audio,
+                window_size=self.window_size_samples,
+                stride=self.window_stride_samples,
                 magnitude_squared=True)
 
             mfcc_fingerprint = contrib_audio.mfcc(
                 spectrogram,
                 wav_decoder.sample_rate,
-                dct_coefficient_count=dct_coefficient_count)
+                dct_coefficient_count=self.dct_coefficient_count)
 
             return mfcc_fingerprint
 
         fingerprints = tf.map_fn(
-                decode, audio_str_tensor, back_prop=False)
+                decode_audio, audio_str_tensor, back_prop=False, dtype=tf.float32)
 
         return audio_str_tensor, fingerprints
 
@@ -391,6 +395,7 @@ class Model(object):
             softmax, logits = self.add_final_training_ops(
                 fingerprints,
                 all_labels_count,
+                is_training,
                 dropout_keep_prob=self.dropout if is_training else None)
 
         # Prediction is the index of the label with the highest score. We are
@@ -428,8 +433,7 @@ class Model(object):
     def build_eval_graph(self, data_paths, batch_size):
         return self.build_graph(data_paths, batch_size, GraphMod.EVALUATE)
 
-    def restore_from_checkpoint(self, session, checkpoint_file,
-                                trained_checkpoint_file):
+    def restore_from_checkpoint(self, session, checkpoint_file):
         """To restore model variables from the checkpoint file.
 
            The graph is assumed to consist of an inception model and other
@@ -451,7 +455,7 @@ class Model(object):
         keys_placeholder = tf.placeholder(tf.string, shape=[None])
         inputs = {
             'key': keys_placeholder,
-            'audio_bytes': tensors.input_wav
+            'audio_bytes': tensors.input_audio
         }
 
         # To extract the id, we need to add the identity function.
@@ -477,7 +481,7 @@ class Model(object):
             inputs, outputs = self.build_prediction_graph()
             init_op = tf.global_variables_initializer()
             sess.run(init_op)
-            self.restore_from_checkpoint(sess, self.checkpoint_file)
+            self.restore_from_checkpoint(sess, last_checkpoint)
             signature_def = build_signature(inputs=inputs, outputs=outputs)
             signature_def_map = {
                 signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
