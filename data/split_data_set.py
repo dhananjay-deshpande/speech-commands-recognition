@@ -4,6 +4,7 @@ import hashlib
 import re
 import csv
 
+SILENCE_LABEL = '_silence_'
 
 labels = ['bed',
           'bird',
@@ -124,10 +125,18 @@ if __name__ == '__main__':
         default='speech_commands_v0.01',
         help='Unarchived data from Google Speech Commands Dataset')
 
+    parser.add_argument(
+        '--silence_percentage',
+        type=float,
+        default=10.0,
+        help="""\
+        How much of the training data should be silence.
+        """)
+
     args = parser.parse_args()
 
-    print(args.validation_percentage)
-    print(args.testing_percentage)
+    print('validation percentage : %d' % args.validation_percentage)
+    print('testing_percentage : %d' % args.testing_percentage)
 
     if args.cloud:
         prefix = args.cloud_prefix
@@ -138,26 +147,62 @@ if __name__ == '__main__':
 
     print(root_dir)
     with open('eval.csv', 'w') as fvalidate, open('test.csv', 'w') as ftest, open('train.csv', 'w') as ftrain:
+
         wvalidate = csv.writer(fvalidate)
         wtest = csv.writer(ftest)
         wtrain = csv.writer(ftrain)
 
+        eval_index = 0
+        train_index = 0
+        test_index = 0
+
+        silence_path = None
+
         for dir_name, sub_dir, file_list in os.walk(root_dir, topdown=False):
-            print('Found directory: %s' % dir_name)
             label = dir_name.split('/')[-1]
 
-            print('label: %s ' % label)
             if label in labels:
                 for fname in file_list:
                     print('\t%s' % fname)
-                    mode = which_set(fname, args.validation_percentage, args.testing_percentage)
 
                     absolute_path = prefix +  args.speech_commands_data_folder + '/' + label + '/' + fname
 
+                    if silence_path == None:
+                        silence_path = absolute_path
+                        wvalidate.writerow([silence_path, SILENCE_LABEL])
+                        wtest.writerow([silence_path, SILENCE_LABEL])
+                        wtrain.writerow([silence_path, SILENCE_LABEL])
+                        continue
+
+                    mode = which_set(fname, args.validation_percentage, args.testing_percentage)
+
                     if mode == 'validation':
+
+                        eval_index+=1
+                        if (eval_index % (100 / args.silence_percentage) == 0):
+                            wvalidate.writerow([silence_path, SILENCE_LABEL])
+                            eval_index+=1
+
                         wvalidate.writerow([absolute_path, label])
+
                     elif mode == 'testing':
+
+                        test_index+=1
+                        if (test_index % (100 / args.silence_percentage) == 0):
+                            wtest.writerow([silence_path, SILENCE_LABEL])
+                            test_index+=1
+
                         wtest.writerow([absolute_path, label])
+
                     else:
+
+                        train_index+=1
+                        if (train_index % (100 / args.silence_percentage) == 0):
+                            wtrain.writerow([silence_path, SILENCE_LABEL])
+                            train_index+=1
+
                         wtrain.writerow([absolute_path, label])
 
+        print('Total validation samples : %d' % eval_index)
+        print('Total test samples : %d' % test_index)
+        print('Total training samples : %d' % train_index)

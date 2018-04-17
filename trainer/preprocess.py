@@ -144,6 +144,7 @@ class ExtractLabelIdsDoFn(beam.DoFn):
 
         labels_count.inc(len(label_ids))
 
+        # If label wasnt found add '_unknown_' -> 1
         if not label_ids:
             unlabeled_audio.inc()
             label_ids.append(1)
@@ -261,7 +262,7 @@ class MFCCGraph(object):
             wav_decoder.sample_rate,
             dct_coefficient_count=self.opt.dct_coefficient_count)
 
-    def calculate_fingerprint(self, filename):
+    def calculate_fingerprint(self, filename, label_ids):
         """Get the mfcc fingerprint for a given WAV audio.
 
 		Args:
@@ -315,7 +316,13 @@ class MFCCGraph(object):
 
         input_dict[self.background_data_placeholder_] = background_reshaped
         input_dict[self.background_volume_placeholder_] = background_volume
-        input_dict[self.foreground_volume_placeholder_] = 1
+
+
+        # handle silence
+        if 0 in label_ids:
+            input_dict[self.foreground_volume_placeholder_] = 0
+        else:
+            input_dict[self.foreground_volume_placeholder_] = 1
 
         return self.tf_session.run(
             self.mfcc_fingerprint_, feed_dict=input_dict)
@@ -368,7 +375,7 @@ class TFExampleFromAudioDoFn(beam.DoFn):
         log.info('Got URI %s: %s', uri, str(label_ids))
 
         try:
-            fingerprint = self.preprocess_graph.calculate_fingerprint(uri)
+            fingerprint = self.preprocess_graph.calculate_fingerprint(uri, label_ids)
         except errors.InvalidArgumentError as e:
             incompatible_audio.inc()
             log.warning('Could not generate fingerprint from %s: %s', uri, str(e))
@@ -509,6 +516,13 @@ def default_args(argv):
         type=int,
         default=40,
         help='How many bins to use for the MFCC fingerprint',)
+    parser.add_argument(
+        '--silence_percentage',
+        type=float,
+        default=10.0,
+        help="""\
+        How much of the training data should be silence.
+        """)
 
     parsed_args, _ = parser.parse_known_args(argv)
 

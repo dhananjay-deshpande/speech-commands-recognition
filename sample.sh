@@ -5,9 +5,9 @@ declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
 declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
 declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
-declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels
+declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
 
-declare -r MODEL_NAME=speech-commands-recognition
+declare -r MODEL_NAME=speechcommands
 declare -r VERSION_NAME=v1
 
 echo
@@ -70,11 +70,11 @@ gcloud ml-engine versions set-default "$VERSION_NAME" --model "$MODEL_NAME"
 
 # Finally, download a daisy and so we can test online prediction.
 gsutil cp \
-  gs://cloud-ml-data/img/flower_photos/daisy/100080576_f52e8ee070_n.jpg \
-  daisy.jpg
+  gs://speech-commands-recognition-ml/data/speech_commands_v0.01/right/00b01445_nohash_0.wav \
+  right.wav
 
-# Since the image is passed via JSON, we have to encode the JPEG string first.
-python -c 'import base64, sys, json; img = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key":"0", "image_bytes": {"b64": img}})' daisy.jpg &> request.json
+# Since the audio is passed via JSON, we have to encode the wav string first.
+python -c 'import base64, sys, json; audio = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key":"0", "audio_bytes": {"b64": audio}})' right.wav &> request.json
 
 # Here we are showing off CloudML online prediction which is still in beta.
 # If the first call returns an error please give it another try; likely the
