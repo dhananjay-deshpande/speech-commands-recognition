@@ -22,13 +22,13 @@ set -v -e
 # CPU's.  Check progress here: https://console.cloud.google.com/dataflow
 python trainer/preprocess.py \
   --input_dict "$DICT_FILE" \
-  --input_path "gs://${BUCKET}/data/eval.csv" \
+  --input_path "${BUCKET}/data/eval.csv" \
   --output_path "${GCS_PATH}/preproc/eval" \
   --cloud
 
 python trainer/preprocess.py \
   --input_dict "$DICT_FILE" \
-  --input_path "gs://${BUCKET}/data/train.csv" \
+  --input_path "${BUCKET}/data/train.csv" \
   --output_path "${GCS_PATH}/preproc/train" \
   --cloud
 
@@ -74,7 +74,7 @@ gsutil cp \
   right.wav
 
 # Since the audio is passed via JSON, we have to encode the wav string first.
-python -c 'import base64, sys, json; audio = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key":"0", "audio_bytes": {"b64": audio}})' right.wav &> request.json
+python -c 'import base64, sys, json; audio = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key":"0", "audio_bytes": audio})' right.wav &> request.json
 
 # Here we are showing off CloudML online prediction which is still in beta.
 # If the first call returns an error please give it another try; likely the

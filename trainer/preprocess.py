@@ -48,15 +48,9 @@ BACKGROUND_NOISE_DIR_NAME = '_background_noise_'
 
 #logging.basicConfig(filename='test.log', filemode='w', level=logging.DEBUG)
 log = logging.getLogger('tensorflow')
-log.setLevel(logging.ERROR)
+log.setLevel(logging.INFO)
 # create formatter and add it to the handlers
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# create file handler which logs even debug messages
-fh = logging.FileHandler('tensorflow.log')
-fh.setLevel(logging.DEBUG)
-fh.setFormatter(formatter)
-log.addHandler(fh)
 
 import apache_beam as beam
 from apache_beam.metrics import Metrics
