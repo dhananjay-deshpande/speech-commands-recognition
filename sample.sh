@@ -36,6 +36,7 @@ python trainer/preprocess.py \
 # commands asynchronously, make sure they have completed before calling this one.
 gcloud ml-engine jobs submit training "$JOB_ID" \
   --stream-logs \
+  --job-dir "${GCS_PATH}" \
   --module-name trainer.task \
   --package-path trainer \
   --staging-bucket "$BUCKET" \
@@ -44,7 +45,30 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
   -- \
   --output_path "${GCS_PATH}/training" \
   --eval_data_paths "${GCS_PATH}/preproc/eval*" \
-  --train_data_paths "${GCS_PATH}/preproc/train*"
+  --train_data_paths "${GCS_PATH}/preproc/train*" \
+  --eval_set_size 7000 \
+  --max_steps 20000 \
+  --batch_size 1000 \
+  --model_architecture "conv"
+
+# Write predictions to csv file
+gcloud ml-engine jobs submit training "$JOB_ID" \
+  --stream-logs \
+  --job-dir "${GCS_PATH}" \
+  --module-name trainer.task \
+  --package-path trainer \
+  --staging-bucket "$BUCKET" \
+  --region us-central1 \
+  --runtime-version=1.4 \
+  -- \
+  --output_path "${GCS_PATH}/training" \
+  --eval_data_paths "${GCS_PATH}/preproc/eval*" \
+  --train_data_paths "${GCS_PATH}/preproc/train*" \
+  --eval_set_size 7000 \
+  --max_steps 20000 \
+  --batch_size 1000 \
+  --model_architecture "conv"
+  --write_predictions
 
 # Remove the model and its version
 # Make sure no error is reported if model does not exist
@@ -74,7 +98,7 @@ gsutil cp \
   right.wav
 
 # Since the audio is passed via JSON, we have to encode the wav string first.
-python -c 'import base64, sys, json; audio = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key":"0", "audio_bytes": audio})' right.wav &> request.json
+python -c 'import base64, sys, json; audio = base64.b64encode(open(sys.argv[1], "rb").read()); print json.dumps({"key": "7", "audio_bytes": {"b64": audio}})' right.wav &> request.json
 
 # Here we are showing off CloudML online prediction which is still in beta.
 # If the first call returns an error please give it another try; likely the

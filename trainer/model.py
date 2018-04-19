@@ -85,7 +85,7 @@ def create_model():
     parser.add_argument(
         '--model_architecture',
         type=str,
-        default='cnn',
+        default='conv',
         help='What model architecture to use')
     parser.add_argument(
         '--train_dir',
@@ -132,10 +132,6 @@ def create_model():
     override_if_not_in_args('--log_interval_secs', '2', task_args)
     override_if_not_in_args('--min_train_eval_rate', '2', task_args)
 
-    if args.model_architecture == 'cnn':
-        return Model(args), task_args
-
-    # By default return cnn model
     return Model(args), task_args
 
 class GraphReferences(object):
@@ -170,12 +166,13 @@ class Model(object):
         self.fingerprint_size = args.dct_coefficient_count * self.spectrogram_length
         self.label_count = args.label_count
         self.dct_coefficient_count = args.dct_coefficient_count
+        self.model_architecture = args.model_architecture
 
-    def add_final_training_ops(self,
-                               fingerprints,
-                               all_labels_count,
-                               is_training,
-                               dropout_keep_prob=None):
+    def add_low_latency_conv(self,
+                fingerprints,
+                all_labels_count,
+                is_training,
+                dropout_keep_prob=None):
         """Adds a new softmax and fully-connected layer for training.
 
          The set up for the softmax and fully-connected layers is based on:
@@ -300,6 +297,116 @@ class Model(object):
         softmax = tf.nn.softmax(final_fc, name='softmax')
         return softmax, final_fc
 
+    def add_conv(self,
+                fingerprints,
+                all_labels_count,
+                is_training,
+                dropout_keep_prob=None):
+
+        """Builds a standard convolutional model.
+
+          This is roughly the network labeled as 'cnn-trad-fpool3' in the
+          'Convolutional Neural Networks for Small-footprint Keyword Spotting' paper:
+          http://www.isca-speech.org/archive/interspeech_2015/papers/i15_1478.pdf
+
+          Here's the layout of the graph:
+
+          (fingerprint_input)
+                  v
+              [Conv2D]<-(weights)
+                  v
+              [BiasAdd]<-(bias)
+                  v
+                [Relu]
+                  v
+              [MaxPool]
+                  v
+              [Conv2D]<-(weights)
+                  v
+              [BiasAdd]<-(bias)
+                  v
+                [Relu]
+                  v
+              [MaxPool]
+                  v
+              [MatMul]<-(weights)
+                  v
+              [BiasAdd]<-(bias)
+                  v
+
+          This produces fairly good quality results, but can involve a large number of
+          weight parameters and computations. For a cheaper alternative from the same
+          paper with slightly less accuracy, see 'low_latency_conv' below.
+
+          During training, dropout nodes are introduced after each relu, controlled by a
+          placeholder.
+
+          Args:
+            fingerprint_input: TensorFlow node that will output audio feature vectors.
+            model_settings: Dictionary of information about the model.
+            is_training: Whether the model is going to be used for training.
+
+          Returns:
+            TensorFlow node outputting logits results, and optionally a dropout
+            placeholder.
+          """
+
+        input_frequency_size = self.dct_coefficient_count
+        input_time_size = self.spectrogram_length
+        fingerprint_4d = tf.reshape(fingerprints,
+                                    [-1, input_time_size, input_frequency_size, 1])
+        first_filter_width = 8
+        first_filter_height = 20
+        first_filter_count = 64
+        first_weights = tf.Variable(
+            tf.truncated_normal(
+                [first_filter_height, first_filter_width, 1, first_filter_count],
+                stddev=0.01))
+        first_bias = tf.Variable(tf.zeros([first_filter_count]))
+        first_conv = tf.nn.conv2d(fingerprint_4d, first_weights, [1, 1, 1, 1],
+                                  'SAME') + first_bias
+        first_relu = tf.nn.relu(first_conv)
+        if is_training:
+            first_dropout = tf.nn.dropout(first_relu, dropout_keep_prob)
+        else:
+            first_dropout = first_relu
+        max_pool = tf.nn.max_pool(first_dropout, [1, 2, 2, 1], [1, 2, 2, 1], 'SAME')
+        second_filter_width = 4
+        second_filter_height = 10
+        second_filter_count = 64
+        second_weights = tf.Variable(
+            tf.truncated_normal(
+                [
+                    second_filter_height, second_filter_width, first_filter_count,
+                    second_filter_count
+                ],
+                stddev=0.01))
+        second_bias = tf.Variable(tf.zeros([second_filter_count]))
+        second_conv = tf.nn.conv2d(max_pool, second_weights, [1, 1, 1, 1],
+                                   'SAME') + second_bias
+        second_relu = tf.nn.relu(second_conv)
+        if is_training:
+            second_dropout = tf.nn.dropout(second_relu, dropout_keep_prob)
+        else:
+            second_dropout = second_relu
+        second_conv_shape = second_dropout.get_shape()
+        second_conv_output_width = second_conv_shape[2]
+        second_conv_output_height = second_conv_shape[1]
+        second_conv_element_count = int(
+            second_conv_output_width * second_conv_output_height *
+            second_filter_count)
+        flattened_second_conv = tf.reshape(second_dropout,
+                                           [-1, second_conv_element_count])
+        label_count = all_labels_count
+        final_fc_weights = tf.Variable(
+            tf.truncated_normal(
+                [second_conv_element_count, label_count], stddev=0.01))
+        final_fc_bias = tf.Variable(tf.zeros([label_count]))
+        final_fc = tf.matmul(flattened_second_conv, final_fc_weights) + final_fc_bias
+
+        softmax = tf.nn.softmax(final_fc, name='softmax')
+        return softmax, final_fc
+
     def build_fingerprints_graph(self):
         """Builds a fingerprint graph and adds the necessary input & output tensors.
 
@@ -320,10 +427,8 @@ class Model(object):
         # string from dynamic batches.
         def decode_audio(audio_str):
 
-            decoded_str = tf.decode_base64(audio_str)
-
             wav_decoder = contrib_audio.decode_wav(
-			    decoded_str, desired_channels=1, desired_samples=self.desired_samples)
+			    audio_str, desired_channels=1, desired_samples=self.desired_samples)
 
             spectrogram = contrib_audio.audio_spectrogram(
                 wav_decoder.audio,
@@ -372,9 +477,6 @@ class Model(object):
                     'audio_uri':
                         tf.FixedLenFeature(
                             shape=[], dtype=tf.string, default_value=['']),
-                    # Some images may have no labels. For those, we assume a default
-                    # label. So the number of labels is label_count+1 for the default
-                    # label.
                     'label':
                         tf.FixedLenFeature(
                             shape=[1], dtype=tf.int64,
@@ -388,15 +490,22 @@ class Model(object):
                 uris = tf.squeeze(parsed['audio_uri'])
                 fingerprints = parsed['fingerprint']
 
-        # We assume a default label, so the total number of labels is equal to
-        # label_count+1.
-        all_labels_count = self.label_count + 1
-        with tf.name_scope('final_ops'):
-            softmax, logits = self.add_final_training_ops(
-                fingerprints,
-                all_labels_count,
-                is_training,
-                dropout_keep_prob=self.dropout if is_training else None)
+        all_labels_count = self.label_count
+
+        if self.model_architecture == "low_latency_conv":
+            with tf.name_scope('low_latency_conv'):
+                softmax, logits = self.add_low_latency_conv(
+                    fingerprints,
+                    all_labels_count,
+                    is_training,
+                    dropout_keep_prob=self.dropout if is_training else None)
+        else:
+             with tf.name_scope('conv'):
+                softmax, logits = self.add_conv(
+                    fingerprints,
+                    all_labels_count,
+                    is_training,
+                    dropout_keep_prob=self.dropout if is_training else None)
 
         # Prediction is the index of the label with the highest score. We are
         # interested only in the top score.
