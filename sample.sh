@@ -4,16 +4,17 @@
 declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
 declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
-declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
+#declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
+declare -r GCS_PATH="${BUCKET}/${USER}/"
 declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
 
 declare -r MODEL_NAME=speechcommands
 declare -r VERSION_NAME=v1
 
 echo
-echo "Using job id: " $JOB_ID
 set -v -e
 
+echo "Started preprocessing pipeline"
 # Takes about 30 mins to preprocess everything.  We serialize the two
 # preprocess.py synchronous calls just for shell scripting ease; you could use
 # --runner DataflowRunner to run them asynchronously.  Typically,
@@ -32,6 +33,7 @@ python trainer/preprocess.py \
   --output_path "${GCS_PATH}/preproc/train" \
   --cloud
 
+echo "Using job id: " $JOB_ID
 # Training on CloudML is quick after preprocessing.  If you ran the above
 # commands asynchronously, make sure they have completed before calling this one.
 gcloud ml-engine jobs submit training "$JOB_ID" \
@@ -43,32 +45,13 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
   --region us-central1 \
   --runtime-version=1.4 \
   -- \
-  --output_path "${GCS_PATH}/training" \
+  --output_path "${GCS_PATH}/${JOB_ID}/training" \
   --eval_data_paths "${GCS_PATH}/preproc/eval*" \
   --train_data_paths "${GCS_PATH}/preproc/train*" \
-  --eval_set_size 7000 \
-  --max_steps 20000 \
-  --batch_size 1000 \
+  --eval_set_size 1000 \
+  --max_steps 5000 \
+  --batch_size 100 \
   --model_architecture "conv"
-
-# Write predictions to csv file
-gcloud ml-engine jobs submit training "$JOB_ID" \
-  --stream-logs \
-  --job-dir "${GCS_PATH}" \
-  --module-name trainer.task \
-  --package-path trainer \
-  --staging-bucket "$BUCKET" \
-  --region us-central1 \
-  --runtime-version=1.4 \
-  -- \
-  --output_path "${GCS_PATH}/training" \
-  --eval_data_paths "${GCS_PATH}/preproc/eval*" \
-  --train_data_paths "${GCS_PATH}/preproc/train*" \
-  --eval_set_size 7000 \
-  --max_steps 20000 \
-  --batch_size 1000 \
-  --model_architecture "conv"
-  --write_predictions
 
 # Remove the model and its version
 # Make sure no error is reported if model does not exist
@@ -85,7 +68,7 @@ gcloud ml-engine models create "$MODEL_NAME" \
 # Tensorflow graph to a Cloud instance, and gets is ready to serve (predict).
 gcloud ml-engine versions create "$VERSION_NAME" \
   --model "$MODEL_NAME" \
-  --origin "${GCS_PATH}/training/model" \
+  --origin "${GCS_PATH}/${JOB_ID}/training/model" \
   --runtime-version=1.4
 
 # Models do not need a default version, but its a great way move your production
