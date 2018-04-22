@@ -5,10 +5,10 @@ declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
 declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
 #declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
-declare -r GCS_PATH="${BUCKET}/${USER}/"
+declare -r GCS_PATH="${BUCKET}/${USER}"
 declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
-
-declare -r MODEL_NAME=speechcommands
+declare -r MODEL_ARCHITECTURE=crnn
+declare -r MODEL_NAME="speechcommands${MODEL_ARCHITECTURE}"
 declare -r VERSION_NAME=v1
 
 echo
@@ -48,10 +48,10 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
   --output_path "${GCS_PATH}/${JOB_ID}/training" \
   --eval_data_paths "${GCS_PATH}/preproc/eval*" \
   --train_data_paths "${GCS_PATH}/preproc/train*" \
-  --eval_set_size 1000 \
-  --max_steps 5000 \
+  --eval_set_size 6500 \
+  --max_steps 20000 \
   --batch_size 100 \
-  --model_architecture "conv"
+  --model_architecture "${MODEL_ARCHITECTURE}"
 
 # Remove the model and its version
 # Make sure no error is reported if model does not exist
@@ -75,7 +75,7 @@ gcloud ml-engine versions create "$VERSION_NAME" \
 # service from one version to another with a single gcloud command.
 gcloud ml-engine versions set-default "$VERSION_NAME" --model "$MODEL_NAME"
 
-# Finally, download a daisy and so we can test online prediction.
+# Finally, download a right wav and so we can test online prediction.
 gsutil cp \
   gs://speech-commands-recognition-ml/data/speech_commands_v0.01/right/00b01445_nohash_0.wav \
   right.wav

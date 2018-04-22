@@ -85,7 +85,7 @@ def create_model():
     parser.add_argument(
         '--model_architecture',
         type=str,
-        default='conv',
+        default='low_latency_conv',
         help='What model architecture to use')
     parser.add_argument(
         '--train_dir',
@@ -407,6 +407,233 @@ class Model(object):
         softmax = tf.nn.softmax(final_fc, name='softmax')
         return softmax, final_fc
 
+    def add_crnn(self,
+                fingerprints,
+                all_labels_count,
+                is_training,
+                dropout_keep_prob=None):
+        """Builds a Convolutional Recurrent model.
+        This model is an improved version of CNN for speech command recognition
+        which has recurrent layers at the end of convolutional layers.
+        Here's the layout of the graph:
+        (fingerprint input)
+            v
+        [Conv2D]<-(weights)
+            v
+        [BiasAdd]<-(bias)
+            v
+         [Relu]
+            v
+        [Recurrent cell]
+            v
+        [FC layer]<-(weights)
+            v
+        [BiasAdd]
+            v
+        [softmax]
+            v
+        Args:
+          fingerprints: TensorFlow node that will output audio feature vectors.
+          model_settings: Dictionary of information about the model.
+          is_training: Whether the model is going to be used for training.
+        Returns:
+          TensorFlow node outputting logits results, and optionally a dropout
+          placeholder.
+        """
+        input_frequency_size = self.dct_coefficient_count
+        input_time_size = self.spectrogram_length
+        fingerprint_4d = tf.reshape(fingerprints,
+                                    [-1, input_time_size, input_frequency_size, 1])
+
+        layer_norm = False
+        bidirectional = True
+
+        # CNN Model
+        first_filter_width = 8
+        first_filter_height = 20
+        first_filter_count = 64
+        stride_x = 1
+        stride_y = 2
+
+        first_weights = tf.Variable(
+            tf.truncated_normal(
+                [first_filter_height, first_filter_width, 1, first_filter_count],
+                stddev=0.01))
+
+        first_bias = tf.Variable(tf.zeros([first_filter_count]))
+
+        first_conv = tf.nn.conv2d(fingerprint_4d, first_weights,
+                                  [1, stride_y, stride_x, 1], 'VALID') + first_bias
+
+        first_relu = tf.nn.relu(first_conv)
+        if is_training:
+            first_dropout = tf.nn.dropout(first_relu, dropout_keep_prob)
+        else:
+            first_dropout = first_relu
+
+        first_conv_output_width = int(math.floor((input_frequency_size - first_filter_width + stride_x) /
+                                                 stride_x))
+        first_conv_output_height = int(math.floor((input_time_size - first_filter_height + stride_y) /
+                                                  stride_y))
+
+        # GRU Model
+        num_layers = 2
+        RNN_units = 128
+
+        flow = tf.reshape(first_dropout, [-1, first_conv_output_height,
+                                          first_conv_output_width * first_filter_count])
+
+        forward_cell, backward_cell = [], []
+
+        for i in range(num_layers):
+            forward_cell.append(tf.contrib.rnn.GRUCell(RNN_units))
+            backward_cell.append(tf.contrib.rnn.GRUCell(RNN_units))
+
+        outputs, output_state_fw, output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(forward_cell,
+                                                                                                   backward_cell, flow,
+                                                                                                   dtype=tf.float32)
+        flow_dim = first_conv_output_height * RNN_units * 2
+        flow = tf.reshape(outputs, [-1, flow_dim])
+
+        fc_output_channels = 256
+        fc_weights = tf.get_variable('fcw', shape=[flow_dim, fc_output_channels],
+                                     initializer=tf.contrib.layers.xavier_initializer())
+
+        fc_bias = tf.Variable(tf.zeros([fc_output_channels]))
+        fc = tf.nn.relu(tf.matmul(flow, fc_weights) + fc_bias)
+
+        if is_training:
+            final_fc_input = tf.nn.dropout(fc, dropout_keep_prob)
+        else:
+            final_fc_input = fc
+
+        label_count = all_labels_count
+
+        final_fc_weights = tf.Variable(tf.truncated_normal([fc_output_channels, label_count], stddev=0.01))
+        final_fc_bias = tf.Variable(tf.zeros([label_count]))
+        final_fc = tf.matmul(final_fc_input, final_fc_weights) + final_fc_bias
+
+        softmax = tf.nn.softmax(final_fc, name='softmax')
+        return softmax, final_fc
+
+    def add_rcnn(self,
+                fingerprints,
+                all_labels_count,
+                is_training,
+                dropout_keep_prob=None):
+        """Builds a Convolutional Recurrent model.
+        This model is an improved version of CNN for speech command recognition
+        which has recurrent layers at the end of convolutional layers.
+        Here's the layout of the graph:
+        (fingerprint input)
+            v
+        [Conv2D]<-(weights)
+            v
+        [BiasAdd]<-(bias)
+            v
+         [Relu]
+            v
+        [Recurrent cell]
+            v
+        [FC layer]<-(weights)
+            v
+        [BiasAdd]
+            v
+        [softmax]
+            v
+        Args:
+          fingerprint_input: TensorFlow node that will output audio feature vectors.
+          model_settings: Dictionary of information about the model.
+          is_training: Whether the model is going to be used for training.
+        Returns:
+          TensorFlow node outputting logits results, and optionally a dropout
+          placeholder.
+        """
+
+        input_frequency_size = self.dct_coefficient_count
+        input_time_size = self.spectrogram_length
+
+        layer_norm = False
+        bidirectional = True
+
+        # RNN Model
+        num_layers = 2
+        RNN_units = 128
+
+        flow = tf.reshape(fingerprints, [-1, input_time_size, input_frequency_size])
+
+        forward_cell, backward_cell = [], []
+
+        for i in range(num_layers):
+            forward_cell.append(tf.contrib.rnn.GRUCell(RNN_units))
+            backward_cell.append(tf.contrib.rnn.GRUCell(RNN_units))
+
+        outputs, output_state_fw, output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(forward_cell,
+                                                                                                   backward_cell, flow,
+                                                                                                   dtype=tf.float32)
+
+        # flow_dim = 3840
+        flow_dim = input_time_size * RNN_units * 2
+        flow = tf.reshape(outputs, [-1, flow_dim])
+
+        fc_output_channels = 1960
+        fc_weights = tf.get_variable('fcw', shape=[flow_dim, fc_output_channels],
+                                     initializer=tf.contrib.layers.xavier_initializer())
+
+        fc_bias = tf.Variable(tf.zeros([fc_output_channels]))
+        fc = tf.nn.relu(tf.matmul(flow, fc_weights) + fc_bias)
+
+        if is_training:
+            cnn_input = tf.nn.dropout(fc, dropout_keep_prob)
+        else:
+            cnn_input = fc
+
+        # CNN Model
+
+        fingerprint_4d = tf.reshape(cnn_input,
+                                    [-1, input_time_size, input_frequency_size, 1])
+
+        first_filter_width = 8
+        first_filter_height = 20
+        first_filter_count = 64
+        stride_x = 1
+        stride_y = 2
+
+        first_weights = tf.Variable(
+            tf.truncated_normal(
+                [first_filter_height, first_filter_width, 1, first_filter_count],
+                stddev=0.01))
+
+        first_bias = tf.Variable(tf.zeros([first_filter_count]))
+
+        first_conv = tf.nn.conv2d(fingerprint_4d, first_weights,
+                                  [1, stride_y, stride_x, 1], 'VALID') + first_bias
+
+        first_relu = tf.nn.relu(first_conv)
+        if is_training:
+            first_dropout = tf.nn.dropout(first_relu, dropout_keep_prob)
+        else:
+            first_dropout = first_relu
+
+        first_conv_output_width = int(math.floor((input_frequency_size - first_filter_width + stride_x) /
+                                                 stride_x))
+        first_conv_output_height = int(math.floor((input_time_size - first_filter_height + stride_y) /
+                                                  stride_y))
+
+        first_dropout_shape = first_dropout.get_shape().as_list()
+        output_channels = first_dropout_shape[1] * first_dropout_shape[2] * first_dropout_shape[3]  # 31680
+
+        flattened_conv = tf.reshape(first_dropout, [-1, output_channels])
+
+        label_count = all_labels_count
+
+        final_fc_weights = tf.Variable(tf.truncated_normal([output_channels, label_count], stddev=0.01))
+        final_fc_bias = tf.Variable(tf.zeros([label_count]))
+        final_fc = tf.matmul(flattened_conv, final_fc_weights) + final_fc_bias
+
+        softmax = tf.nn.softmax(final_fc, name='softmax')
+        return softmax, final_fc
+
     def build_fingerprints_graph(self):
         """Builds a fingerprint graph and adds the necessary input & output tensors.
 
@@ -499,8 +726,23 @@ class Model(object):
                     all_labels_count,
                     is_training,
                     dropout_keep_prob=self.dropout if is_training else None)
+
+        elif self.model_architecture == "crnn":
+             with tf.name_scope('crnn'):
+                softmax, logits = self.add_crnn(
+                    fingerprints,
+                    all_labels_count,
+                    is_training,
+                    dropout_keep_prob=self.dropout if is_training else None)
+        elif self.model_architecture == "rcnn":
+             with tf.name_scope('rcnn'):
+                softmax, logits = self.add_rcnn(
+                    fingerprints,
+                    all_labels_count,
+                    is_training,
+                    dropout_keep_prob=self.dropout if is_training else None)
         else:
-             with tf.name_scope('conv'):
+            with tf.name_scope('conv'):
                 softmax, logits = self.add_conv(
                     fingerprints,
                     all_labels_count,
