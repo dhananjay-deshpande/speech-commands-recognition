@@ -4,12 +4,12 @@
 declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
 declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
-#declare -r GCS_PATH="${BUCKET}/${USER}/${JOB_ID}"
 declare -r GCS_PATH="${BUCKET}/${USER}"
 declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
 declare -r MODEL_ARCHITECTURE=crnn
 declare -r MODEL_NAME="speechcommands${MODEL_ARCHITECTURE}"
-declare -r VERSION_NAME=v1
+# DJ : Change for every new model configuration
+declare -r VERSION_NAME=v2
 
 echo
 set -v -e
@@ -21,17 +21,20 @@ echo "Started preprocessing pipeline"
 # the total worker time is higher when running on Cloud instead of your local
 # machine due to increased network traffic and the use of more cost efficient
 # CPU's.  Check progress here: https://console.cloud.google.com/dataflow
-python trainer/preprocess.py \
-  --input_dict "$DICT_FILE" \
-  --input_path "${BUCKET}/data/eval.csv" \
-  --output_path "${GCS_PATH}/preproc/eval" \
-  --cloud
 
-python trainer/preprocess.py \
-  --input_dict "$DICT_FILE" \
-  --input_path "${BUCKET}/data/train.csv" \
-  --output_path "${GCS_PATH}/preproc/train" \
-  --cloud
+# DJ : Uncomment both eval and train when preprocessing. Needs to be run only once
+
+#python trainer/preprocess.py \
+#  --input_dict "$DICT_FILE" \
+#  --input_path "${BUCKET}/data/eval.csv" \
+#  --output_path "${GCS_PATH}/preproc/eval" \
+#  --cloud
+
+#python trainer/preprocess.py \
+#  --input_dict "$DICT_FILE" \
+#  --input_path "${BUCKET}/data/train.csv" \
+#  --output_path "${GCS_PATH}/preproc/train" \
+#  --cloud
 
 echo "Using job id: " $JOB_ID
 # Training on CloudML is quick after preprocessing.  If you ran the above
@@ -56,12 +59,11 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
 # Remove the model and its version
 # Make sure no error is reported if model does not exist
 gcloud ml-engine versions delete $VERSION_NAME --model=$MODEL_NAME -q --verbosity none
-gcloud ml-engine models delete $MODEL_NAME -q --verbosity none
+#gcloud ml-engine models delete $MODEL_NAME -q --verbosity none
 
 # Tell CloudML about a new type of model coming.  Think of a "model" here as
 # a namespace for deployed Tensorflow graphs.
-gcloud ml-engine models create "$MODEL_NAME" \
-  --regions us-central1
+gcloud ml-engine models create "$MODEL_NAME" --regions us-central1
 
 # Each unique Tensorflow graph--with all the information it needs to execute--
 # corresponds to a "version".  Creating a version actually deploys our
@@ -69,7 +71,7 @@ gcloud ml-engine models create "$MODEL_NAME" \
 gcloud ml-engine versions create "$VERSION_NAME" \
   --model "$MODEL_NAME" \
   --origin "${GCS_PATH}/${JOB_ID}/training/model" \
-  --runtime-version=1.4
+  --runtime-version=1.6
 
 # Models do not need a default version, but its a great way move your production
 # service from one version to another with a single gcloud command.
