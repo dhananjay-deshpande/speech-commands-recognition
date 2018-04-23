@@ -46,14 +46,14 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
   --package-path trainer \
   --staging-bucket "$BUCKET" \
   --region us-central1 \
-  --runtime-version=1.4 \
+  --runtime-version=1.6 \
   -- \
   --output_path "${GCS_PATH}/${JOB_ID}/training" \
   --eval_data_paths "${GCS_PATH}/preproc/eval*" \
   --train_data_paths "${GCS_PATH}/preproc/train*" \
   --eval_set_size 6500 \
   --max_steps 20000 \
-  --batch_size 100 \
+  --batch_size 500 \
   --model_architecture "${MODEL_ARCHITECTURE}"
 
 # Remove the model and its version
