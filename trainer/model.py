@@ -449,10 +449,10 @@ class Model(object):
         bidirectional = True
 
         # CNN Model
-        first_filter_width = 8
-        first_filter_height = 20
-        first_filter_count = 64
-        stride_x = 1
+        first_filter_width = 20
+        first_filter_height = 5
+        first_filter_count = 32
+        stride_x = 4
         stride_y = 2
 
         first_weights = tf.Variable(
@@ -478,7 +478,7 @@ class Model(object):
 
         # GRU Model
         num_layers = 2
-        RNN_units = 128
+        RNN_units = 64
 
         flow = tf.reshape(first_dropout, [-1, first_conv_output_height,
                                           first_conv_output_width * first_filter_count])
@@ -495,7 +495,7 @@ class Model(object):
         flow_dim = first_conv_output_height * RNN_units * 2
         flow = tf.reshape(outputs, [-1, flow_dim])
 
-        fc_output_channels = 256
+        fc_output_channels = 128
         fc_weights = tf.get_variable('fcw', shape=[flow_dim, fc_output_channels],
                                      initializer=tf.contrib.layers.xavier_initializer())
 

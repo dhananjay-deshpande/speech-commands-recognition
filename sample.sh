@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Download Google speech commands data set from http://download.tensorflow.org/data/speech_commands_v0.01.tar.gz
+# Extract contents of archive into ./data folder
+# Run split_data_set.py to create train, eval and test data sets
+# You will see the following files created in ./data -> train.csv, eval.csv, test.csv
+
+
 # Now that we are set up, we can start processing some speech commands audio.
 declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
 declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
@@ -8,11 +14,14 @@ declare -r GCS_PATH="${BUCKET}/${USER}"
 declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
 declare -r MODEL_ARCHITECTURE=crnn
 declare -r MODEL_NAME="speechcommands${MODEL_ARCHITECTURE}"
-# DJ : Change for every new model configuration
-declare -r VERSION_NAME=v2
+
+# Change for every new model configuration
+declare -r VERSION_NAME=v3
 
 echo
 set -v -e
+
+
 
 echo "Started preprocessing pipeline"
 # Takes about 30 mins to preprocess everything.  We serialize the two
@@ -22,7 +31,7 @@ echo "Started preprocessing pipeline"
 # machine due to increased network traffic and the use of more cost efficient
 # CPU's.  Check progress here: https://console.cloud.google.com/dataflow
 
-# DJ : Uncomment both eval and train when preprocessing. Needs to be run only once
+# Uncomment both eval and train when preprocessing. Needs to be run only once
 
 #python trainer/preprocess.py \
 #  --input_dict "$DICT_FILE" \

@@ -167,13 +167,6 @@ def process_args():
         type=int,
         default=40,
         help='How many bins to use for the MFCC fingerprint',)
-    parser.add_argument(
-        '--silence_percentage',
-        type=float,
-        default=10.0,
-        help="""\
-        How much of the training data should be silence.
-        """)
 
     args, _ = parser.parse_known_args()
 
