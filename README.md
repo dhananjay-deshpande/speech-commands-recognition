@@ -1,7 +1,9 @@
 Speech Command Recognition on Cloud ML
 --------------------------------------------------
 
-Build a model to recognize speech commands from audio files.
+Build a model to recognize speech commands from audio files. 
+
+This repository is based on previous work done on classifying flower images which can be found [here](https://github.com/GoogleCloudPlatform/cloudml-samples/tree/master/flowers)
 
 - - -
 
