@@ -12,16 +12,14 @@ declare -r JOB_ID="speech_commands_${USER}_$(date +%Y%m%d_%H%M%S)"
 declare -r BUCKET="gs://${PROJECT}-ml"
 declare -r GCS_PATH="${BUCKET}/${USER}"
 declare -r DICT_FILE=gs://${PROJECT}-ml/data/labels.txt
-declare -r MODEL_ARCHITECTURE=crnn
+declare -r MODEL_ARCHITECTURE=rcnn
 declare -r MODEL_NAME="speechcommands${MODEL_ARCHITECTURE}"
 
 # Change for every new model configuration
-declare -r VERSION_NAME=v3
+declare -r VERSION_NAME=v1
 
 echo
 set -v -e
-
-
 
 echo "Started preprocessing pipeline"
 # Takes about 30 mins to preprocess everything.  We serialize the two
@@ -61,7 +59,7 @@ gcloud ml-engine jobs submit training "$JOB_ID" \
   --eval_data_paths "${GCS_PATH}/preproc/eval*" \
   --train_data_paths "${GCS_PATH}/preproc/train*" \
   --eval_set_size 6500 \
-  --max_steps 20000 \
+  --max_steps 200 \
   --batch_size 500 \
   --model_architecture "${MODEL_ARCHITECTURE}"
 
