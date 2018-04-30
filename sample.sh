@@ -2,9 +2,10 @@
 
 # Download Google speech commands data set from http://download.tensorflow.org/data/speech_commands_v0.01.tar.gz
 # Extract contents of archive into ./data folder
-# Run split_data_set.py to create train, eval and test data sets
+# This should create a folder ./data/speech_commands_v0.01
+# Run ./data/split_data_set.py --cloudt a to create train, eval and test data sets
 # You will see the following files created in ./data -> train.csv, eval.csv, test.csv
-
+# Copy data folder to $BUCKET/data folder on Google Storage
 
 # Now that we are set up, we can start processing some speech commands audio.
 declare -r PROJECT=$(gcloud config list project --format "value(core.project)")
