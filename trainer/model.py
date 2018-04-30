@@ -85,7 +85,7 @@ def create_model():
     parser.add_argument(
         '--model_architecture',
         type=str,
-        default='low_latency_conv',
+        default='lowlatencyconv',
         help='What model architecture to use')
     parser.add_argument(
         '--train_dir',
@@ -148,7 +148,7 @@ class GraphReferences(object):
         self.input_audio = None
 
 class Model(object):
-    """CNN TensorFlow model for the audio commands problem."""
+    """TensorFlow model for the audio commands problem."""
 
     def __init__(self, args):
         self.args = args
@@ -173,23 +173,7 @@ class Model(object):
                 all_labels_count,
                 is_training,
                 dropout_keep_prob=None):
-        """Adds a new softmax and fully-connected layer for training.
 
-         The set up for the softmax and fully-connected layers is based on:
-         https://tensorflow.org/versions/master/tutorials/mnist/beginners/index.html
-
-         This function can be customized to add arbitrary layers for
-         application-specific requirements.
-        Args:
-          fingerprints: The fingerprints tensor.
-          all_labels_count: The number of all labels including the default label.
-          hidden_layer_size: The size of the hidden_layer. Roughtly, 1/4 of the
-                             bottleneck tensor size.
-          dropout_keep_prob: the percentage of activation values that are retained.
-        Returns:
-          softmax: The softmax or tensor. It stores the final scores.
-          logits: The logits tensor.
-        """
         """Builds a convolutional model with low compute requirements.
         
         This is roughly the network labeled as 'cnn-one-fstride4' in the
@@ -226,13 +210,15 @@ class Model(object):
         placeholder.
 
         Args:
-            fingerprint_input: TensorFlow node that will output audio feature vectors.
-            model_settings: Dictionary of information about the model.
+            fingerprints: TensorFlow node that will output audio feature vectors.
+            all_labels_count: The number of all labels.
             is_training: Whether the model is going to be used for training.
+            dropout_keep_prob: the percentage of activation values that are retained.
 
         Returns:
-            TensorFlow node outputting logits results, and optionally a dropout
-            placeholder.
+            softmax: The softmax or tensor. It stores the final scores.
+            logits: The logits tensor.
+
         """
 
         input_frequency_size = self.dct_coefficient_count
@@ -342,14 +328,16 @@ class Model(object):
           placeholder.
 
           Args:
-            fingerprint_input: TensorFlow node that will output audio feature vectors.
-            model_settings: Dictionary of information about the model.
+            fingerprints: TensorFlow node that will output audio feature vectors.
+            all_labels_count: The number of all labels.
             is_training: Whether the model is going to be used for training.
+            dropout_keep_prob: the percentage of activation values that are retained.
 
           Returns:
-            TensorFlow node outputting logits results, and optionally a dropout
-            placeholder.
-          """
+            softmax: The softmax or tensor. It stores the final scores.
+            logits: The logits tensor.
+
+        """
 
         input_frequency_size = self.dct_coefficient_count
         input_time_size = self.spectrogram_length
@@ -412,7 +400,9 @@ class Model(object):
                 all_labels_count,
                 is_training,
                 dropout_keep_prob=None):
+
         """Builds a Convolutional Recurrent model.
+
         This model is an improved version of CNN for speech command recognition
         which has recurrent layers at the end of convolutional layers.
         Here's the layout of the graph:
@@ -432,13 +422,17 @@ class Model(object):
             v
         [softmax]
             v
+
         Args:
-          fingerprints: TensorFlow node that will output audio feature vectors.
-          model_settings: Dictionary of information about the model.
-          is_training: Whether the model is going to be used for training.
+            fingerprints: TensorFlow node that will output audio feature vectors.
+            all_labels_count: The number of all labels.
+            is_training: Whether the model is going to be used for training.
+            dropout_keep_prob: the percentage of activation values that are retained.
+
         Returns:
-          TensorFlow node outputting logits results, and optionally a dropout
-          placeholder.
+            softmax: The softmax or tensor. It stores the final scores.
+            logits: The logits tensor.
+
         """
         input_frequency_size = self.dct_coefficient_count
         input_time_size = self.spectrogram_length
@@ -521,11 +515,15 @@ class Model(object):
                 all_labels_count,
                 is_training,
                 dropout_keep_prob=None):
-        """Builds a Convolutional Recurrent model.
+
+        """Builds a Recurrent Convolutional model.
+
         This model is an improved version of CNN for speech command recognition
         which has recurrent layers at the end of convolutional layers.
         Here's the layout of the graph:
         (fingerprint input)
+            v
+        [Recurrent cell]
             v
         [Conv2D]<-(weights)
             v
@@ -533,21 +531,23 @@ class Model(object):
             v
          [Relu]
             v
-        [Recurrent cell]
-            v
         [FC layer]<-(weights)
             v
         [BiasAdd]
             v
         [softmax]
             v
+
         Args:
-          fingerprint_input: TensorFlow node that will output audio feature vectors.
-          model_settings: Dictionary of information about the model.
-          is_training: Whether the model is going to be used for training.
+            fingerprints: TensorFlow node that will output audio feature vectors.
+            all_labels_count: The number of all labels.
+            is_training: Whether the model is going to be used for training.
+            dropout_keep_prob: the percentage of activation values that are retained.
+
         Returns:
-          TensorFlow node outputting logits results, and optionally a dropout
-          placeholder.
+            softmax: The softmax or tensor. It stores the final scores.
+            logits: The logits tensor.
+
         """
 
         input_frequency_size = self.dct_coefficient_count
@@ -810,8 +810,8 @@ class Model(object):
 
         all_labels_count = self.label_count
 
-        if self.model_architecture == "low_latency_conv":
-            with tf.name_scope('low_latency_conv'):
+        if self.model_architecture == "lowlatencyconv":
+            with tf.name_scope('lowlatencyconv'):
                 softmax, logits = self.add_low_latency_conv(
                     fingerprints,
                     all_labels_count,
